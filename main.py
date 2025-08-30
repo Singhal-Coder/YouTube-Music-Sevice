@@ -5,11 +5,12 @@ from typing import Optional, get_args
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security import APIKeyHeader
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from dotenv import load_dotenv
 
 from schemas.youtube_attributes import genreSchema, moodSchema, instrumentSchema, licenseTypeSchema
 from utils.track_downloader import get_download_url_for_track, stream_track_from_url
+from utils.playlist_scraper import get_all_tracks as get_all_tracks_from_youtube
 
 load_dotenv()
 
@@ -27,17 +28,30 @@ async def get_api_key(api_key: str = Security(api_key_header)):
             status_code=403, detail="Could not validate credentials"
         )
 
+attributes = {
+    "genres": get_args(genreSchema),
+    "moods": get_args(moodSchema),
+    "instruments": get_args(instrumentSchema)
+}
 
-# 1. Create an instance of the FastAPI application
 app = FastAPI(
     title="YouTube Creator Music API",
     description="A custom microservice to filter and download royalty-free music."
 )
 
 class Attribute(BaseModel):
-    genre: Optional[genreSchema] = None
-    mood: Optional[moodSchema] = None
-    instrument: Optional[instrumentSchema] = None
+    genre: Optional[str] = None
+    mood: Optional[str] = None
+    instrument: Optional[str] = None
+    @model_validator(mode="after")
+    def validate_attributes(self):
+        if self.genre is not None and self.genre not in attributes["genres"]:
+            raise ValueError(f"Invalid genre: {self.genre}")
+        if self.mood is not None and self.mood not in attributes["moods"]:
+            raise ValueError(f"Invalid mood: {self.mood}")
+        if self.instrument is not None and self.instrument not in attributes["instruments"]:
+            raise ValueError(f"Invalid instrument: {self.instrument}")
+        return self
 
 class TrackSearchRequest(BaseModel):
     attributes: Attribute
@@ -46,7 +60,11 @@ class TrackSearchRequest(BaseModel):
 
 def load_tracks_from_db():
     """Helper function to load our track data."""
+    global attributes
     try:
+        if not os.path.exists("youtube_studio_tracks.json"):
+            result = get_all_tracks_from_youtube()
+            attributes = result.get("available_attributes", {})
         with open("youtube_studio_tracks.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         return data.get("tracks", [])
@@ -71,11 +89,30 @@ def get_available_attributes():
     Returns a list of all unique, available values for genres,
     moods, and instruments to be used in search filters.
     """
-    return {
-        "genres": list(get_args(genreSchema)),
-        "moods": list(get_args(moodSchema)),
-        "instruments": list(get_args(instrumentSchema))
-    }
+    return attributes
+
+@app.post("/tracks/refresh", dependencies=[Depends(get_api_key)])
+def refresh_track_database():
+    """
+    Triggers a full re-scrape of all tracks from YouTube Studio
+    and overwrites the local JSON database file.
+    This can take a few minutes to complete.
+    """
+    global attributes
+    print("Force refresh of track database initiated...")
+    try:
+        result = get_all_tracks_from_youtube()
+        attributes = result.get("available_attributes", {})
+        
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
+
+        print("Track database refresh completed successfully.")
+        return {"status": "success", "message": f"Successfully scraped and saved {result.get('count', 0)} tracks."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred during refresh: {e}")
+
 
 @app.get("/tracks/all", dependencies=[Depends(get_api_key)])
 def get_all_tracks():

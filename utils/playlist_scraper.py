@@ -108,7 +108,9 @@ def get_all_tracks():
     cfg = load_cfg()
     headers = get_headers(cfg)
     payload = get_payload(cfg)
-
+    all_genres = set()
+    all_moods = set()
+    all_instruments = set()
     all_tracks = {}
     page = 1
     while True:
@@ -135,6 +137,9 @@ def get_all_tracks():
             tracks = data.get("tracks", [])
 
         for t in tracks:
+            all_genres.update(t.get("attributes", {}).get("genres", []))
+            all_moods.update(t.get("attributes", {}).get("moods", []))
+            all_instruments.update(t.get("attributes", {}).get("instruments", []))
             tid = t.get("trackId") or t.get("id")
             if tid:
                 all_tracks[tid] = t
@@ -152,13 +157,20 @@ def get_all_tracks():
 
     print(f"Collected tracks: {len(all_tracks)}")
 
-    # Optional: save to file
     output_file ="youtube_studio_tracks.json"
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump({"collected": len(all_tracks), "tracks": list(all_tracks.values())}, f, ensure_ascii=False, indent=2)
 
     print(f"Saved to {output_file}")
-    return {"success": True, "count": len(all_tracks)}
+    return {
+        "success": True, 
+        "count": len(all_tracks),
+        "available_attributes": {
+            "genres": list(all_genres),
+            "moods": list(all_moods),
+            "instruments": list(all_instruments)
+        }
+    }
 
 
 if __name__ == "__main__":
